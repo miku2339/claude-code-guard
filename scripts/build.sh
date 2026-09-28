@@ -27,14 +27,20 @@ fi
 
 /bin/mkdir -p "$DIST_DIR" "$STAGING_APP/Contents/MacOS" "$STAGING_APP/Contents/Resources"
 /bin/cp "$RESOURCE_DIR/Info.plist" "$STAGING_APP/Contents/Info.plist"
+/bin/cp "$PROJECT_DIR/LICENSE" "$STAGING_APP/Contents/Resources/LICENSE"
 
 if [[ ! -f "$RESOURCE_DIR/guard.py" || -L "$RESOURCE_DIR/guard.py" ]]; then
   print -u2 '缺少有效的 Resources/guard.py。'
   exit 66
 fi
 /bin/cp "$RESOURCE_DIR/guard.py" "$STAGING_APP/Contents/Resources/guard.py"
+/bin/cp "$RESOURCE_DIR/EnvironmentPolicy.json" "$STAGING_APP/Contents/Resources/EnvironmentPolicy.json"
 
-/usr/bin/swiftc -O -target arm64-apple-macos13.0 -framework AppKit \
+for asset in Guard.html Guard.css Guard.js Logo.png; do
+  /bin/cp "$RESOURCE_DIR/$asset" "$STAGING_APP/Contents/Resources/$asset"
+done
+
+/usr/bin/swiftc -O -target arm64-apple-macos13.0 -framework AppKit -framework WebKit \
   "$SOURCE_FILE" \
   -o "$STAGING_APP/Contents/MacOS/$EXECUTABLE_NAME"
 

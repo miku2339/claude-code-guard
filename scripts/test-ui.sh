@@ -12,9 +12,11 @@ trap cleanup EXIT
 /usr/bin/sed '/^let application = NSApplication.shared$/,$d' \
   "$PROJECT_DIR/Sources/Launcher.swift" > "$TEMP_DIR/Launcher.swift"
 
+/bin/cat "$PROJECT_DIR/tests/ui_render.swift" >> "$TEMP_DIR/Launcher.swift"
+
 /usr/bin/swiftc -D UI_RENDER_TEST -parse-as-library \
-  -target arm64-apple-macos13.0 -framework AppKit \
-  "$TEMP_DIR/Launcher.swift" "$PROJECT_DIR/tests/ui_render.swift" \
+  -target arm64-apple-macos13.0 -framework AppKit -framework WebKit \
+  "$TEMP_DIR/Launcher.swift" \
   -o "$TEMP_DIR/ui-render-test"
 
-"$TEMP_DIR/ui-render-test"
+"$TEMP_DIR/ui-render-test" "$PROJECT_DIR/Resources" "$@"

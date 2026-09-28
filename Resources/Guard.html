@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Claude 環境檢查</title>
+  <link rel="stylesheet" href="Guard.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <img class="logo" src="Logo.png" alt="Claude Code Guard">
+      <div>
+        <p class="eyebrow">CLAUDE CODE GUARD</p>
+        <h1>Claude 環境檢查</h1>
+        <p class="intro">確認目前桌面環境，再開啟 Claude。</p>
+      </div>
+    </header>
+    <section class="summary" aria-live="polite">
+      <span class="summary-dot" aria-hidden="true"></span>
+      <div>
+        <p id="overall-title" class="summary-title">正在檢查</p>
+        <p id="overall-detail" class="summary-detail">請稍候完成所有必要檢查。</p>
+      </div>
+    </section>
+    <section id="environment-checks" class="checks" aria-label="環境狀態"></section>
+    <label id="risk-acceptance" class="risk-acceptance" hidden>
+      <input id="risk-acceptance-checkbox" type="checkbox" autocomplete="off">
+      <span>
+        <strong>我已知風險，繼續</strong>
+        <small>只接受目前機房 IP 及風險分數；其餘檢查仍須通過。</small>
+        <small id="risk-acceptance-status" class="risk-acceptance-status" aria-live="polite"></small>
+      </span>
+    </label>
+    <details class="desktop-protection">
+      <summary id="desktop-summary">桌面防護</summary>
+      <section id="desktop-checks" class="checks" aria-label="桌面防護"></section>
+    </details>
+    <div class="actions">
+      <button id="continue-button" class="primary" type="button" disabled>開啟 Claude Code</button>
+      <button id="retry-button" class="secondary" type="button" disabled>重新檢查</button>
+    </div>
+    <details class="permissions">
+      <summary>權限資料</summary>
+      <div id="permissions-list"></div>
+    </details>
+    <p class="notice">出口查詢使用 Cloudflare、ipwho.is 及 ProxyCheck。WebRTC 與指紋尚未在官方桌面 App 內量測；檢查結果不能保證帳戶安全或服務可用性。</p>
+  </main>
+  <script src="Guard.js" defer></script>
+</body>
+</html>

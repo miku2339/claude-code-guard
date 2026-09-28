@@ -11,11 +11,13 @@ This project is independent from Anthropic. This alpha provides environment diag
 ## Current checks
 
 - Verifies the staged and installed app against the currently pinned official identity: bundle ID `com.anthropic.claudefordesktop`, Team ID `Q6L2SF6YDW`, version `2.9939.4`, strict code-signature validation, and Gatekeeper assessment.
-- Requires the configured HTTP loopback proxy at `127.0.0.1:17897` and checks that its public exit is in Japan, reports the `Asia/Tokyo` time zone, and matches the selected English app preferences.
-- Cross-checks the public exit with Cloudflare Trace and ipwho.is.
-- Applies a project-defined conservative ProxyCheck policy: any `hosting`, `proxy`, `vpn`, `tor`, `compromised`, `scraper`, or `anonymous` flag, or a risk score above 25, blocks the gate. This is a local policy and is not an official Anthropic allowlist or approval decision.
+- Requires the configured HTTP loopback proxy at `127.0.0.1:17897`. Cloudflare Trace and ipwho.is must report the same current public IP and country, within the 185-country Claude.ai snapshot dated 2026-09-29. Excluded Ukrainian subdivisions remain blocked; missing subdivision information is unknown.
+- Checks the exit time zone and UTC offset, local system time zone, and ordered app language preferences against the country locale used by [Claude Chrome](https://github.com/miku233333/claude-chrome). Japan expects `Asia/Tokyo` and `ja-JP,ja`. The bundled `EnvironmentPolicy.json` contains the region snapshot and macOS Foundation locale mapping. App preference readback does not prove the official app's runtime values.
+- Applies the same conservative ProxyCheck policy as Claude Chrome: seven boolean risk flags plus complete risk/confidence, provider, and matching geography are required. Any positive flag or risk above 25 blocks by default. A user may acknowledge a complete snapshot where only `hosting` is true; other flags, missing data, or conflicting geography cannot be acknowledged. The unchecked-by-default option is held only in app memory and tied to the exact IP, geography, provider, scores, flags, and assessment time. This is a local policy, not an Anthropic approval decision.
+- Caches valid reputation responses privately for up to 30 minutes for the same exit and geography. A refreshed or changed snapshot clears earlier consent. Every check still re-observes the current exit through both services.
 - Runs IPv4, IPv6, UDP, and loopback-proxy probes inside the configured `sandbox-exec` profile. These probes validate only the guarded CLI probe process; they do not prove that Claude Desktop has been tested or contained.
 - Inventories permission declarations from the official app's `Info.plist` and code-signing entitlements. A declaration is not a macOS permission grant. Current TCC grant status remains unknown.
+- Uses the Claude Chrome environment card layout, with blocking reasons in the summary and expandable desktop protection and permissions. WebRTC, Canvas, WebGL, and other browser measurements are explicitly unmeasured in the official desktop app; results from Chrome are not reused as desktop evidence.
 - Treats every failed or unknown mandatory result as launch-blocking. Check results expire after 60 seconds.
 
 ## Current security boundary
@@ -24,13 +26,22 @@ The currently disabled launch path is designed to start the verified Claude exec
 
 A custom Network Extension firewall is planned but has not been implemented, signed, approved, installed, or tested. A supported macOS deployment requires a paid Apple Developer team, suitable Developer ID signing and provisioning, Network Extension and System Extension entitlements, notarization, and user approval of the System Extension and Network Filter. This project does not require or recommend disabling System Integrity Protection.
 
+## System firewall completion path
+
+1. Implement an `NEFilterDataProvider` system extension that identifies verified Claude executables and helpers and permits only the designated local proxy. The proxy must have a fixed upstream and no direct fallback. A content filter permits or drops traffic; the launcher must still configure proxy use.
+2. Add authenticated runtime status, loaded-policy readback, executable identity checks, and real blocking probes. Present network enforcement and camera/microphone permission review separately.
+3. Produce a Developer ID signed, provisioned, notarized artifact through a team authorized for this project, then install and approve it on a Mac with SIP enabled. A paid team can enable the ordinary content-filter entitlement; a free Personal Team lacks the required capabilities.
+4. Validate new and existing connections during proxy loss, provider faults, sleep/wake, restart, updates, and direct launches. Shell children, delegated DNS, and Cowork VM traffic require separate attribution testing before claiming complete coverage.
+
+References: [Apple Content Filter](https://developer.apple.com/documentation/networkextension/nefilterdataprovider), [Developer ID Network Extension](https://developer.apple.com/forums/thread/737894), [Network Extension signing eligibility](https://developer.apple.com/forums/thread/814047).
+
 ## Build
 
 Requirements:
 
 - macOS 13 or later on Apple silicon
 - Command Line Tools containing `/usr/bin/swiftc`
-- AppKit
+- AppKit and WebKit
 - `/usr/bin/python3`
 
 Build the local app:
@@ -39,7 +50,7 @@ Build the local app:
 ./scripts/build.sh
 ```
 
-The script compiles an arm64 AppKit app and places the ad-hoc-signed result at `dist/claude-code-guard.app`. The ad-hoc signature is only for this local launch-gate app; it cannot provide the restricted entitlements required by a Network Extension firewall.
+The script compiles an arm64 AppKit/WKWebView app and places the ad-hoc-signed result at `dist/claude-code-guard.app`. The ad-hoc signature is only for this local launch-gate app; it cannot provide the restricted entitlements required by a Network Extension firewall.
 
 Run the tests:
 
@@ -63,7 +74,7 @@ These home-relative paths describe local configuration. They do not contain priv
 
 Network checks disclose the proxy's observed public exit IP to three external providers: Cloudflare, ipwho.is, and ProxyCheck. Those services may process requests under their own policies.
 
-The guard does not collect or transmit Claude accounts, API keys, authentication tokens, or chat contents. This source repository contains neither the official Claude application nor its download cache.
+The guard does not collect or transmit Claude accounts, API keys, authentication tokens, or chat contents. The local reputation cache contains the exit IP and provider response with file mode `0600`. This source repository contains neither that cache nor the official Claude application or its download cache.
 
 ## Limitations
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import errno
+import hashlib
 import ipaddress
 import json
 import math
@@ -14,17 +15,22 @@ import pathlib
 import plistlib
 import re
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
+import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 EXPECTED_BUNDLE_ID = "com.anthropic.claudefordesktop"
 EXPECTED_TEAM_ID = "Q6L2SF6YDW"
 EXPECTED_VERSION = "2.9939.4"
-EXPECTED_COUNTRY = "JP"
-EXPECTED_TIME_ZONE = "Asia/Tokyo"
 PROXY_URL = "http://127.0.0.1:17897"
+POLICY_PATH = pathlib.Path(__file__).with_name("EnvironmentPolicy.json")
+CACHE_PATH = pathlib.Path.home() / "Library/Application Support/Claude Desktop Guard/reputation.json"
+REPUTATION_MAX_AGE = 1800
 STAGED_APP = pathlib.Path.home() / "Library/Application Support/Claude Desktop Guard/Staging/Claude.app"
 INSTALLED_APP = pathlib.Path("/Applications/Claude.app")
 SANDBOX_PROFILE = pathlib.Path.home() / ".local/share/claude-network-guard/claude-proxy-only.sb"
@@ -144,94 +150,204 @@ def curl_bytes(url: str) -> bytes | None:
     return result.stdout
 
 
-def cloudflare_trace() -> tuple[dict[str, str], str | None]:
+def load_policy() -> dict[str, Any]:
+    try:
+        value = json.loads(POLICY_PATH.read_text())
+        if value.get("schema") == 1 and isinstance(value.get("countries"), dict):
+            return value
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"countries": {}}
+
+
+def supported_region(country: str, region: Any) -> tuple[str, str]:
+    policy = load_policy()
+    if not policy["countries"]:
+        return "unknown", "支援地區資料無法讀取。"
+    if country not in policy["countries"]:
+        return "fail", f"{country} 不在目前 Claude.ai 支援地區快照。"
+    if country == "UA":
+        excluded = policy.get("ukraineExcludedRegions")
+        if not isinstance(region, str) or not region.strip() or not isinstance(excluded, list) or not excluded:
+            return "unknown", "烏克蘭出口缺少可核實的分區資料。"
+        if any(name.casefold() in region.casefold() for name in excluded):
+            return "fail", f"出口分區 {region} 不在支援範圍。"
+    return "pass", f"{country} 符合 {policy.get('checkedAt', '未知日期')} 的支援地區快照。"
+
+
+def cloudflare_trace() -> tuple[dict[str, str], dict[str, str] | None]:
     raw = curl_bytes("https://www.cloudflare.com/cdn-cgi/trace")
     if raw is None:
         return check("proxy_exit", "代理出口", "unknown", "經 127.0.0.1:17897 查詢 Cloudflare Trace 失敗。"), None
     try:
         fields = dict(line.split("=", 1) for line in raw.decode("utf-8").splitlines() if "=" in line)
-        address = str(ipaddress.ip_address(fields["ip"]))
+        address = ipaddress.ip_address(fields["ip"])
         country = fields["loc"]
+        if not address.is_global or not re.fullmatch(r"[A-Z]{2}", country):
+            raise ValueError("public exit")
     except (UnicodeError, KeyError, ValueError):
-        return check("proxy_exit", "代理出口", "unknown", "Cloudflare Trace 回應格式不完整。"), None
-    if country != EXPECTED_COUNTRY:
-        return check("proxy_exit", "代理出口", "fail", f"出口國家為 {country}；保守出口門檻目前只接受日本。"), address
-    return check("proxy_exit", "代理出口", "pass", f"Cloudflare Trace 顯示日本出口 {address}。"), address
+        return check("proxy_exit", "代理出口", "unknown", "Cloudflare Trace 未提供完整公網 IP／國家。"), None
+    context = {"ip": str(address), "country": country}
+    return check("proxy_exit", "代理出口", "pass", f"Cloudflare Trace：{country}，{address}。"), context
 
 
-def ipwho_check(expected_ip: str | None) -> tuple[dict[str, str], dict[str, Any] | None]:
-    if expected_ip is None:
-        return check("exit_location", "出口位置", "unknown", "缺少可供獨立比對的出口 IP。"), None
-    raw = curl_bytes(f"https://ipwho.is/{expected_ip}?fields=ip,success,country_code,timezone")
+def ipwho_check(exit_context: dict[str, str] | None) -> tuple[dict[str, str], dict[str, Any] | None]:
+    if exit_context is None:
+        return check("exit_location", "出口及支援地區", "unknown", "缺少可供獨立比對的出口資料。"), None
+    raw = curl_bytes("https://ipwho.is/?fields=ip,success,country_code,region,timezone")
     if raw is None:
-        return check("exit_location", "出口位置", "unknown", "經指定代理查詢 ipwho.is 失敗。"), None
+        return check("exit_location", "出口及支援地區", "unknown", "經指定代理查詢 ipwho.is 失敗。"), None
     try:
         value = json.loads(raw)
-        zone = value["timezone"]
-        valid = (
-            isinstance(value, dict) and value.get("success") is True
-            and str(ipaddress.ip_address(value["ip"])) == expected_ip
-            and isinstance(zone, dict) and isinstance(zone.get("id"), str)
-            and isinstance(value.get("country_code"), str)
-        )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        valid = False
-        value = None
-    if not valid:
-        return check("exit_location", "出口位置", "unknown", "ipwho.is 回應無法完整驗證或 IP 不匹配。"), None
-    country = value["country_code"]
-    zone_id = value["timezone"]["id"]
-    if country != EXPECTED_COUNTRY or zone_id != EXPECTED_TIME_ZONE:
-        return check(
-            "exit_location", "出口位置", "fail",
-            f"ipwho.is 顯示 {country}／{zone_id}，未達日本 {EXPECTED_TIME_ZONE} 保守出口門檻。",
-        ), value
-    return check("exit_location", "出口位置", "pass", "ipwho.is 獨立確認相同 IP、日本及 Asia/Tokyo。"), value
+        address = ipaddress.ip_address(value["ip"])
+        country = value["country_code"]
+        zone_id = value["timezone"]["id"]
+        offset = value["timezone"]["offset"]
+        if value.get("success") is not True or not address.is_global or not re.fullmatch(r"[A-Z]{2}", country):
+            raise ValueError("geography")
+        if type(offset) is not int or not isinstance(zone_id, str):
+            raise ValueError("timezone")
+        zone = ZoneInfo(zone_id)
+        expected_offset = int(dt.datetime.now(zone).utcoffset().total_seconds())
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError, ZoneInfoNotFoundError):
+        return check("exit_location", "出口及支援地區", "unknown", "ipwho.is 回應缺少完整公網 IP、國家、時區或 UTC offset。"), None
+    if str(address) != exit_context["ip"] or country != exit_context["country"]:
+        return check("exit_location", "出口及支援地區", "fail", "Cloudflare 與 ipwho.is 的即時出口 IP／國家不一致。"), None
+    if offset != expected_offset:
+        return check("exit_location", "出口及支援地區", "fail", f"出口 UTC offset {offset} 與 {zone_id} 目前應有的 {expected_offset} 不符。"), None
+    status, detail = supported_region(country, value.get("region"))
+    context = {"ip": str(address), "country": country, "timeZone": zone_id, "utcOffset": offset}
+    return check("exit_location", "出口及支援地區", status, f"相同出口 IP；{detail} 時區 {zone_id}。"), context if status == "pass" else None
+
+
+def validated_reputation(payload: Any, expected_ip: str, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    try:
+        if not isinstance(payload, dict) or payload.get("status") not in ("ok", "warning"):
+            return None
+        record = payload[expected_ip]
+        detections = record["detections"]
+        if any(type(detections.get(name)) is not bool for name in RISK_FLAGS):
+            return None
+        for name in ("risk", "confidence"):
+            score = detections[name]
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 100:
+                return None
+        network = record["network"]
+        country = record["location"]["country_code"]
+        zone_id = record["location"]["timezone"]
+        if not all(isinstance(network.get(name), str) and network[name].strip() for name in ("type", "provider")):
+            return None
+        if not isinstance(country, str) or not re.fullmatch(r"[A-Z]{2}", country) or not isinstance(zone_id, str):
+            return None
+        ZoneInfo(zone_id)
+        if context and (expected_ip != context["ip"] or country != context["country"] or zone_id != context["timeZone"]):
+            return None
+        return {"ip": expected_ip, "country": country, "timeZone": zone_id,
+                "networkType": network["type"][:64], "provider": network["provider"][:128],
+                "detections": {name: detections[name] for name in (*RISK_FLAGS, "risk", "confidence")}}
+    except (KeyError, TypeError, ValueError, AttributeError, ZoneInfoNotFoundError):
+        return None
 
 
 def evaluate_proxycheck(payload: Any, expected_ip: str) -> tuple[str, str]:
-    if not isinstance(payload, dict) or payload.get("status") not in ("ok", "warning"):
-        return "unknown", "ProxyCheck 回應狀態無法驗證。"
-    if expected_ip not in payload or not isinstance(payload[expected_ip], dict):
-        return "unknown", "ProxyCheck 回應未包含完全匹配的出口 IP。"
-    detections = payload[expected_ip].get("detections")
-    if not isinstance(detections, dict):
-        return "unknown", "ProxyCheck 回應缺少 detections。"
-    for name in RISK_FLAGS:
-        if type(detections.get(name)) is not bool:
-            return "unknown", f"ProxyCheck 欄位 {name} 缺漏或不是布林值。"
-    risk = detections.get("risk")
-    if isinstance(risk, bool) or not isinstance(risk, (int, float)) or not math.isfinite(risk) or not 0 <= risk <= 100:
-        return "unknown", "ProxyCheck risk 缺漏或超出 0 至 100。"
+    snapshot = validated_reputation(payload, expected_ip)
+    if snapshot is None:
+        return "unknown", "ProxyCheck 資料不完整，無法核實出口信譽。"
+    detections = snapshot["detections"]
     positive = [name for name in RISK_FLAGS if detections[name]]
+    risk = detections["risk"]
     if positive or risk > 25:
-        reason = "、".join(positive) if positive else "未命中布林風險項"
-        return "fail", f"保守出口門檻未通過：{reason}；risk {risk:g}/100（上限 25）。"
-    return "pass", f"保守出口門檻通過：七項偵測均為 false，risk {risk:g}/100。"
+        reason = "、".join(positive) if positive else "分數超出門檻"
+        return "fail", f"{reason}；risk {risk:g}/100（上限 25）。"
+    return "pass", f"七項偵測均為 false，risk {risk:g}/100。"
 
 
-def proxycheck_check(expected_ip: str | None) -> dict[str, str]:
-    if expected_ip is None:
-        return check("exit_reputation", "出口信譽", "unknown", "缺少已獨立核實的出口 IP。")
-    raw = curl_bytes(f"https://proxycheck.io/v3/{expected_ip}?ver=24-June-2026")
-    if raw is None:
-        return check("exit_reputation", "出口信譽", "unknown", "經指定代理查詢 ProxyCheck v3 失敗。")
+def read_reputation_cache(context: dict[str, Any], now: float) -> dict[str, Any] | None:
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return check("exit_reputation", "出口信譽", "unknown", "ProxyCheck 回應不是有效 JSON。")
-    status, detail = evaluate_proxycheck(payload, expected_ip)
-    return check("exit_reputation", "出口信譽", status, detail)
+        with os.fdopen(os.open(CACHE_PATH, os.O_RDONLY | os.O_NOFOLLOW), "r") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600 or not 0 < metadata.st_size <= 65536:
+                return None
+            value = json.load(handle)
+        fetched = value["fetchedAt"]
+        if isinstance(fetched, bool) or not isinstance(fetched, (int, float)) or not math.isfinite(fetched) or not 0 <= now - fetched < REPUTATION_MAX_AGE:
+            return None
+        if value.get("schema") != 1 or value.get("context") != context or validated_reputation(value.get("payload"), context["ip"], context) is None:
+            return None
+        return value
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
-def system_time_zone_check() -> dict[str, str]:
+def write_reputation_cache(value: dict[str, Any]) -> None:
+    temporary = None
+    try:
+        CACHE_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parent = CACHE_PATH.parent.lstat()
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+            return
+        if CACHE_PATH.is_symlink():
+            return
+        with tempfile.NamedTemporaryFile(mode="w", prefix=".reputation-", dir=CACHE_PATH.parent, delete=False) as handle:
+            temporary = pathlib.Path(handle.name)
+            json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temporary, CACHE_PATH)
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def reputation_decision(snapshot: dict[str, Any], fetched_at: float, acceptance: str | None) -> tuple[dict[str, str], dict[str, Any]]:
+    flags = snapshot["detections"]
+    positive = [name for name in RISK_FLAGS if flags[name]]
+    risk = flags["risk"]
+    eligible = flags["hosting"] and all(flags[name] is False for name in RISK_FLAGS if name != "hosting")
+    snapshot_key = hashlib.sha256(json.dumps({**snapshot, "checkedAt": fetched_at}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    accepted = eligible and acceptance == snapshot_key
+    detail = f"{snapshot['ip']} · {snapshot['provider']} · risk {risk:g}/100"
+    acknowledgement = {"eligible": eligible, "snapshotKey": snapshot_key if eligible else "", "accepted": accepted, "detail": detail}
+    if accepted:
+        return check("exit_reputation", "出口風險確認", "pass", f"已確認承擔此機房出口及風險分數；{detail}。其他檢查仍須通過。"), acknowledgement
+    if positive or risk > 25:
+        reason = "、".join(positive) if positive else "分數超出門檻"
+        return check("exit_reputation", "出口信譽", "fail", f"{reason}；{detail}（預設上限 25）。"), acknowledgement
+    return check("exit_reputation", "出口信譽", "pass", f"七項偵測均為 false；{detail}。"), acknowledgement
+
+
+def proxycheck_check(context: dict[str, Any] | None, acceptance: str | None = None) -> tuple[dict[str, str], dict[str, Any]]:
+    empty_ack = {"eligible": False, "snapshotKey": "", "accepted": False, "detail": ""}
+    if context is None:
+        return check("exit_reputation", "出口信譽", "unknown", "缺少一致且受支援的即時出口資料。"), empty_ack
+    now = time.time()
+    cached = read_reputation_cache(context, now)
+    if cached is None:
+        raw = curl_bytes(f"https://proxycheck.io/v3/{context['ip']}?ver=24-June-2026")
+        try:
+            payload = json.loads(raw) if raw else None
+        except (json.JSONDecodeError, UnicodeError):
+            payload = None
+        if validated_reputation(payload, context["ip"], context) is None:
+            return check("exit_reputation", "出口信譽", "unknown", "ProxyCheck 資料缺漏或 IP／國家／時區不一致；無法接受風險。"), empty_ack
+        cached = {"schema": 1, "context": context, "fetchedAt": now, "payload": payload}
+        write_reputation_cache(cached)
+    snapshot = validated_reputation(cached["payload"], context["ip"], context)
+    return reputation_decision(snapshot, cached["fetchedAt"], acceptance)
+
+
+def system_time_zone_check(context: dict[str, Any] | None) -> dict[str, str]:
+    if context is None:
+        return check("system_timezone", "系統時區與出口", "unknown", "缺少已核實的出口時區。")
     try:
         target = pathlib.Path("/etc/localtime").resolve(strict=True)
-    except OSError:
-        return check("system_timezone", "系統時區", "unknown", "無法讀取 /etc/localtime。")
-    if target.as_posix().endswith("/Asia/Tokyo"):
-        return check("system_timezone", "系統時區", "pass", "系統時區為 Asia/Tokyo。")
-    return check("system_timezone", "系統時區", "fail", f"系統時區不是 Asia/Tokyo（目前 {target.name}）。")
+        zone_id = context["timeZone"]
+        zone = ZoneInfo(zone_id)
+    except (OSError, KeyError, ValueError, ZoneInfoNotFoundError):
+        return check("system_timezone", "系統時區與出口", "unknown", "無法核實系統／出口時區。")
+    if target.as_posix().endswith("/" + zone_id):
+        return check("system_timezone", "系統時區與出口", "pass", f"系統與出口均為 {zone_id}，UTC offset {int(dt.datetime.now(zone).utcoffset().total_seconds())} 秒。")
+    return check("system_timezone", "系統時區與出口", "fail", f"系統為 {target.name}；出口要求 {zone_id}。")
 
 
 def defaults_value(key: str) -> str | None:
@@ -241,21 +357,20 @@ def defaults_value(key: str) -> str | None:
     return result.stdout.decode("utf-8", "replace").strip()
 
 
-def language_check() -> dict[str, str]:
+def language_check(context: dict[str, Any] | None) -> dict[str, str]:
+    country = context.get("country") if context else None
+    expected = load_policy()["countries"].get(country, {}).get("languages")
+    if not isinstance(expected, list) or len(expected) != 2 or not all(isinstance(item, str) for item in expected):
+        return check("app_language", "App 語言與出口", "unknown", "無法按出口國家確定預期語言。")
     languages = defaults_value("AppleLanguages")
     locale = defaults_value("AppleLocale")
     if languages is None or locale is None:
-        return check("app_language", "App 語言與地區", "unknown", "App 的 AppleLanguages 或 AppleLocale 尚未設定。")
-    quoted = re.findall(r'"([^"\\]+)"', languages)
-    if quoted:
-        first_language = quoted[0]
-    else:
-        candidates = [item.strip(" ,()\t\r\n") for item in languages.splitlines() if item.strip(" ,()\t\r\n")]
-        first_language = candidates[0] if candidates else ""
-    locale = locale.strip('"').split("@", 1)[0]
-    if (first_language == "en" or first_language.startswith("en-")) and locale == "en_US":
-        return check("app_language", "App 語言與地區", "pass", f"首選語言 {first_language}，地區 en_US。")
-    return check("app_language", "App 語言與地區", "fail", "App 首選語言須為英文，AppleLocale 須為 en_US。")
+        return check("app_language", "App 語言與出口", "unknown", f"未設定 App 語言；{country} 出口預期 {'、'.join(expected)}。")
+    actual = [item.strip(' ,()"\t\r\n') for item in languages.splitlines() if item.strip(' ,()"\t\r\n')]
+    locale = locale.strip('"').split("@", 1)[0].replace("_", "-")
+    if actual == expected and locale == expected[0]:
+        return check("app_language", "App 語言與出口", "pass", f"App 設定為 {'、'.join(actual)}，符合 {country} 出口；這是偏好設定讀回。")
+    return check("app_language", "App 語言與出口", "fail", f"App 現為 {'、'.join(actual)}／{locale}；{country} 出口預期 {'、'.join(expected)}／{expected[0]}。")
 
 
 def socket_probe(kind: str) -> dict[str, Any]:
@@ -367,13 +482,13 @@ def compute_can_launch(checks: Any, installed_verified: bool) -> bool:
     return all(statuses[check_id] == "pass" for check_id in REQUIRED_LAUNCH_CHECK_IDS)
 
 
-def launch_environment() -> dict[str, str]:
+def launch_environment(time_zone: str) -> dict[str, str]:
     environment = os.environ.copy()
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         environment[name] = PROXY_URL
     environment["NO_PROXY"] = ""
     environment["no_proxy"] = ""
-    environment["TZ"] = EXPECTED_TIME_ZONE
+    environment["TZ"] = time_zone
     return environment
 
 
@@ -386,16 +501,18 @@ def launch_command(binary: pathlib.Path) -> list[str]:
     ]
 
 
-def perform_check() -> tuple[dict[str, Any], bool]:
+def perform_check(acceptance: str | None = None) -> tuple[dict[str, Any], bool]:
     checks: list[dict[str, str]] = []
     staged_check, staged_verified = verify_app_identity(STAGED_APP, "staged_app", "暫存安裝包", "info")
     installed_check, installed_verified = verify_app_identity(INSTALLED_APP, "installed_app", "已安裝官方 App", "info")
     checks.extend((staged_check, installed_check))
 
-    trace_check, exit_ip = cloudflare_trace()
-    location_check, _ = ipwho_check(exit_ip)
-    checks.extend((trace_check, location_check, proxycheck_check(exit_ip)))
-    checks.extend((system_time_zone_check(), language_check(), sandbox_check(), evaluate_firewall()))
+    trace_check, trace_context = cloudflare_trace()
+    location_check, exit_context = ipwho_check(trace_context)
+    reputation_check, acknowledgement = proxycheck_check(exit_context, acceptance)
+    checks.extend((trace_check, location_check, reputation_check))
+    checks.extend((system_time_zone_check(exit_context), language_check(exit_context), sandbox_check(), evaluate_firewall()))
+    checks.append(check("browser_baseline", "WebRTC 與瀏覽器指紋", "info", "尚未在官方桌面 App 內量測。Chrome 的 Canvas、WebGL、navigator 及 STUN 結果不能代表此 App；目前沙箱探測亦只涵蓋探測程序。"))
 
     inventory_app = INSTALLED_APP if installed_verified else STAGED_APP if staged_verified else None
     permissions, tcc_check = permission_inventory(inventory_app)
@@ -406,6 +523,8 @@ def perform_check() -> tuple[dict[str, Any], bool]:
         "canLaunch": can_launch,
         "checks": checks,
         "permissions": permissions,
+        "hostingAcknowledgement": acknowledgement,
+        "exitContext": exit_context,
     }
     return result, installed_verified
 
@@ -425,10 +544,18 @@ def launch(result: dict[str, Any], installed_verified: bool) -> int:
         return 2
     binary = INSTALLED_APP / "Contents/MacOS" / executable
     try:
+        time_zone = result["exitContext"]["timeZone"]
+        ZoneInfo(time_zone)
+    except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
+        result["canLaunch"] = False
+        result["checks"].append(check("launch_timezone", "啟動時區", "unknown", "缺少已核實的出口時區。"))
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        return 2
+    try:
         subprocess.Popen(
             launch_command(binary),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, env=launch_environment(),
+            start_new_session=True, env=launch_environment(time_zone),
         )
     except OSError:
         result["canLaunch"] = False
@@ -445,11 +572,12 @@ def main() -> int:
     group.add_argument("--check", action="store_true")
     group.add_argument("--launch", action="store_true")
     group.add_argument("--probe", choices=("ipv4", "ipv6", "udp", "proxy"))
+    parser.add_argument("--accept-hosting-snapshot")
     arguments = parser.parse_args()
     if arguments.probe:
         print(json.dumps(socket_probe(arguments.probe), separators=(",", ":")))
         return 0
-    result, installed_verified = perform_check()
+    result, installed_verified = perform_check(arguments.accept_hosting_snapshot)
     if arguments.check:
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return 0

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WebKit
 
 private let appName = "claude-code-guard"
 private let maximumProcessOutputBytes = 1_048_576
@@ -34,11 +35,33 @@ private struct GuardPermission: Decodable {
     let detail: String
 }
 
+private struct HostingAcknowledgement: Decodable {
+    let eligible: Bool
+    let snapshotKey: String
+    let accepted: Bool
+    let detail: String
+}
+
 private struct GuardResponse: Decodable {
     let checkedAt: String
     let canLaunch: Bool
     let checks: [GuardCheck]
     let permissions: [GuardPermission]
+    let hostingAcknowledgement: HostingAcknowledgement?
+
+    init(
+        checkedAt: String,
+        canLaunch: Bool,
+        checks: [GuardCheck],
+        permissions: [GuardPermission],
+        hostingAcknowledgement: HostingAcknowledgement? = nil
+    ) {
+        self.checkedAt = checkedAt
+        self.canLaunch = canLaunch
+        self.checks = checks
+        self.permissions = permissions
+        self.hostingAcknowledgement = hostingAcknowledgement
+    }
 }
 
 private struct CommandResult {
@@ -192,396 +215,283 @@ private enum GuardRunner {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     private var window: NSWindow!
-    private let statusText = NSTextView()
-    private let checksStack = NSStackView()
-    private let permissionsStack = NSStackView()
-    private let recheckButton = NSButton(title: "重新檢查", target: nil, action: nil)
-    private let launchButton = NSButton(title: "啟動 Claude", target: nil, action: nil)
+    private var webView: WKWebView!
+    private var pageURL: URL!
+    private var pageReady = false
     private var lastResponse: GuardResponse?
+    private var lastPayload: [String: Any] = [:]
+    private var hostingSnapshotKey: String?
     private var isBusy = false
+    private var errorMessage: String?
+    private var didLaunch = false
     private var expiryTimer: Timer?
+#if UI_RENDER_TEST
+    private var isTesting = false
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        configureMenu()
-        configureWindow()
-        performCheck()
+        let menu = NSMenu()
+        let item = NSMenuItem()
+        let appMenu = NSMenu(title: appName)
+        appMenu.addItem(withTitle: "結束 \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        item.submenu = appMenu
+        menu.addItem(item)
+        NSApp.mainMenu = menu
+        guard let resourcesURL = Bundle.main.resourceURL else { return }
+        configureWindow(resourcesURL: resourcesURL)
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
-    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
         expiryTimer?.invalidate()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "guard")
     }
 
-    private func configureMenu() {
-        let mainMenu = NSMenu()
-        let appMenuItem = NSMenuItem()
-        mainMenu.addItem(appMenuItem)
-        let appMenu = NSMenu(title: appName)
-        appMenu.addItem(
-            withTitle: "結束 \(appName)",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
-        appMenuItem.submenu = appMenu
-        NSApp.mainMenu = mainMenu
-    }
-
-    private func configureWindow() {
+    private func configureWindow(resourcesURL: URL) {
+        pageURL = resourcesURL.appendingPathComponent("Guard.html").standardizedFileURL
+        let available = NSScreen.main?.visibleFrame.size ?? NSSize(width: 900, height: 1050)
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
+            contentRect: NSRect(x: 0, y: 0, width: min(900, available.width - 40), height: min(1050, available.height - 60)),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false
         )
         window.title = appName
         window.isReleasedWhenClosed = false
+        window.contentMinSize = NSSize(width: 500, height: 600)
+        window.backgroundColor = NSColor(red: 247 / 255, green: 240 / 255, blue: 229 / 255, alpha: 1)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(self, name: "guard")
+        webView = WKWebView(frame: window.contentView!.bounds, configuration: configuration)
+        webView.autoresizingMask = [.width, .height]
+        webView.navigationDelegate = self
+        window.contentView = webView
         window.center()
-        window.contentMinSize = NSSize(width: 500, height: 520)
-
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 18
-        root.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 20, right: 24)
-        root.translatesAutoresizingMaskIntoConstraints = false
-
-        let heading = makeHeading()
-        root.addArrangedSubview(heading)
-
-        configureStatusText()
-        root.addArrangedSubview(statusText)
-
-        let scrollView = makeResultsScrollView()
-        root.addArrangedSubview(scrollView)
-
-        let buttonRow = makeButtonRow()
-        root.addArrangedSubview(buttonRow)
-
-        guard let contentView = window.contentView else { return }
-        contentView.addSubview(root)
-        NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            root.topAnchor.constraint(equalTo: contentView.topAnchor),
-            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            heading.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -48),
-            statusText.widthAnchor.constraint(equalTo: heading.widthAnchor),
-            scrollView.widthAnchor.constraint(equalTo: heading.widthAnchor),
-            buttonRow.widthAnchor.constraint(equalTo: heading.widthAnchor),
-        ])
-
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        webView.loadFileURL(pageURL, allowingReadAccessTo: resourcesURL)
     }
 
-    private func makeHeading() -> NSView {
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "checkmark.shield", accessibilityDescription: "安全檢查")
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .medium)
-        icon.contentTintColor = .controlAccentColor
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 36),
-            icon.heightAnchor.constraint(equalToConstant: 36),
-        ])
-
-        let title = NSTextField(labelWithString: "先檢查，再啟動")
-        title.font = .systemFont(ofSize: 24, weight: .semibold)
-        let subtitle = NSTextField(wrappingLabelWithString: "Alpha · 啟動防護尚未就緒")
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.font = .systemFont(ofSize: 13)
-
-        let text = NSStackView(views: [title, subtitle])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 4
-
-        let row = NSStackView(views: [icon, text])
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 12
-        return row
+    private func isTrustedPage(_ url: URL?) -> Bool {
+        guard let url, url.isFileURL else { return false }
+        return url.standardizedFileURL == pageURL
     }
 
-    private func configureStatusText() {
-        statusText.isEditable = false
-        statusText.isSelectable = true
-        statusText.drawsBackground = false
-        statusText.textContainerInset = NSSize(width: 0, height: 2)
-        statusText.font = .systemFont(ofSize: 13)
-        statusText.textColor = .secondaryLabelColor
-        statusText.string = "正在檢查…"
-        statusText.translatesAutoresizingMaskIntoConstraints = false
-        statusText.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        decisionHandler(navigationAction.targetFrame?.isMainFrame == true && isTrustedPage(navigationAction.request.url) ? .allow : .cancel)
     }
 
-    private func makeResultsScrollView() -> NSScrollView {
-        checksStack.orientation = .vertical
-        checksStack.alignment = .leading
-        checksStack.spacing = 8
-        permissionsStack.orientation = .vertical
-        permissionsStack.alignment = .leading
-        permissionsStack.spacing = 8
-
-        let checksTitle = makeSectionTitle("檢查結果")
-        let permissionsTitle = makeSectionTitle("權限資料")
-        let contentStack = NSStackView(views: [checksTitle, checksStack, permissionsTitle, permissionsStack])
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = 10
-        contentStack.setCustomSpacing(18, after: checksStack)
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let documentView = NSView()
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        documentView.addSubview(contentStack)
-
-        let scrollView = NSScrollView()
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.borderType = .noBorder
-        scrollView.documentView = documentView
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
-        scrollView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-
-        NSLayoutConstraint.activate([
-            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            contentStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
-            contentStack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -8),
-            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor),
-            contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
-            checksTitle.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -8),
-            checksStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -8),
-            permissionsTitle.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -8),
-            permissionsStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -8),
-        ])
-
-        return scrollView
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        showPageFailure()
     }
 
-    private func makeSectionTitle(_ value: String) -> NSTextField {
-        let label = NSTextField(labelWithString: value)
-        label.font = .systemFont(ofSize: 14, weight: .semibold)
-        return label
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        pageReady = false
+        lastResponse = nil
+        lastPayload = [:]
+        hostingSnapshotKey = nil
+        expiryTimer?.invalidate()
+        showPageFailure()
     }
 
-    private func makeButtonRow() -> NSStackView {
-        recheckButton.target = self
-        recheckButton.action = #selector(recheck(_:))
-        recheckButton.bezelStyle = .rounded
-
-        launchButton.target = self
-        launchButton.action = #selector(launchClaude(_:))
-        launchButton.bezelStyle = .rounded
-        launchButton.keyEquivalent = "\r"
-        launchButton.isEnabled = false
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let row = NSStackView(views: [spacer, recheckButton, launchButton])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        return row
+    private func showPageFailure() {
+        let alert = NSAlert()
+        alert.messageText = "介面未能載入"
+        alert.informativeText = "請重新開啟 claude-code-guard。"
+        alert.beginSheetModal(for: window)
     }
 
-    @objc private func recheck(_ sender: Any?) {
-        performCheck()
-    }
-
-    @objc private func launchClaude(_ sender: Any?) {
-        guard responseAllowsLaunch(lastResponse), !isBusy else {
-            refreshLaunchAvailability()
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "guard", message.frameInfo.isMainFrame,
+              isTrustedPage(message.frameInfo.request.url),
+              let body = message.body as? [String: Any], let action = body["action"] as? String else { return }
+        if action == "ready" {
+            guard !pageReady else { publishState(); return }
+            pageReady = true
+#if UI_RENDER_TEST
+            if isTesting { publishState(); return }
+#endif
+            performCheck()
             return
         }
-
-        setBusy(true)
-        setStatus("正在再次核實並啟動 Claude…", color: .secondaryLabelColor)
-        GuardRunner.run(arguments: ["--launch"]) { [weak self] result in
-            guard let self else { return }
-            if result.exitCode == 0,
-               result.launchError == nil,
-               !result.standardOutput.isEmpty,
-               !result.outputWasTruncated,
-               let response = try? JSONDecoder().decode(GuardResponse.self, from: result.standardOutput),
-               self.responseAllowsLaunch(response) {
-                self.lastResponse = response
-                self.render(response)
-                self.isBusy = false
-                self.recheckButton.isEnabled = true
-                self.launchButton.isEnabled = false
-                self.setStatus("Claude 已通過檢查並啟動。", color: .systemGreen)
-                return
-            }
-
-            let summary = self.failureSummary(for: result, fallback: "啟動失敗。")
-            self.setBusy(false)
-            self.performCheck(contextMessage: "\(summary) 已重新檢查。")
+        guard pageReady, !isBusy else { return }
+        switch action {
+        case "check": performCheck()
+        case "launch": launchClaude()
+        case "risk":
+            guard let accepted = body["accepted"] as? Bool,
+                  let acknowledgement = lastResponse?.hostingAcknowledgement,
+                  acknowledgement.eligible, !acknowledgement.snapshotKey.isEmpty else { return }
+            hostingSnapshotKey = accepted ? acknowledgement.snapshotKey : nil
+            performCheck()
+        default: break
         }
     }
 
-    private func performCheck(contextMessage: String? = nil) {
+    private func acceptedHostingSnapshotKey(for response: GuardResponse?) -> String? {
+        guard let acknowledgement = response?.hostingAcknowledgement,
+              acknowledgement.eligible, acknowledgement.accepted,
+              !acknowledgement.snapshotKey.isEmpty,
+              hostingSnapshotKey == acknowledgement.snapshotKey else { return nil }
+        return acknowledgement.snapshotKey
+    }
+
+    private func readResponse(_ result: CommandResult) -> Bool {
+        guard result.launchError == nil, result.exitCode == 0, !result.outputWasTruncated,
+              let response = try? JSONDecoder().decode(GuardResponse.self, from: result.standardOutput),
+              let payload = try? JSONSerialization.jsonObject(with: result.standardOutput) as? [String: Any] else {
+            lastResponse = nil
+            lastPayload = [:]
+            hostingSnapshotKey = nil
+            errorMessage = failureSummary(for: result, fallback: "未能取得有效檢查結果。")
+            return false
+        }
+        lastResponse = response
+        lastPayload = payload
+        if acceptedHostingSnapshotKey(for: response) == nil { hostingSnapshotKey = nil }
+        errorMessage = nil
+        return true
+    }
+
+    private func performCheck() {
         guard !isBusy else { return }
+        var arguments = ["--check"]
+        if let hostingSnapshotKey { arguments += ["--accept-hosting-snapshot", hostingSnapshotKey] }
         lastResponse = nil
-        setBusy(true)
-        setStatus("正在檢查…", color: .secondaryLabelColor)
-        showPlaceholder("正在讀取檢查結果…", in: checksStack)
-        showPlaceholder("正在讀取權限資料…", in: permissionsStack)
-
-        GuardRunner.run(arguments: ["--check"]) { [weak self] result in
+        lastPayload = [:]
+        errorMessage = nil
+        didLaunch = false
+        isBusy = true
+        expiryTimer?.invalidate()
+        publishState()
+        GuardRunner.run(arguments: arguments) { [weak self] result in
             guard let self else { return }
-            self.setBusy(false)
+            self.isBusy = false
+            _ = self.readResponse(result)
+            self.publishState()
+            self.scheduleExpiry()
+        }
+    }
 
-            guard result.launchError == nil,
-                  result.exitCode == 0,
-                  !result.standardOutput.isEmpty,
-                  !result.outputWasTruncated,
-                  let response = try? JSONDecoder().decode(GuardResponse.self, from: result.standardOutput)
-            else {
-                self.lastResponse = nil
-                self.showPlaceholder("未能取得有效檢查結果。", in: self.checksStack)
-                self.showPlaceholder("權限資料不可用。", in: self.permissionsStack)
-                self.setStatus(self.failureSummary(for: result, fallback: "檢查失敗。"), color: .systemRed)
-                self.refreshLaunchAvailability()
-                return
-            }
-
-            self.lastResponse = response
-            self.render(response)
-            let prefix = contextMessage.map { "\($0)\n" } ?? ""
-            if self.responseAllowsLaunch(response) {
-                self.setStatus("\(prefix)所有啟動條件已通過。檢查結果 60 秒內有效。", color: .systemGreen)
-            } else if self.checkedDate(from: response.checkedAt) == nil {
-                self.setStatus("\(prefix)檢查時間無效，請重新檢查。", color: .systemRed)
-            } else if self.isResponseFresh(response) == false {
-                self.setStatus("\(prefix)檢查結果已過期，請重新檢查。", color: .systemOrange)
+    private func launchClaude() {
+        guard !isBusy, !didLaunch, responseAllowsLaunch(lastResponse) else { return }
+        var arguments = ["--launch"]
+        if let key = acceptedHostingSnapshotKey(for: lastResponse) { arguments += ["--accept-hosting-snapshot", key] }
+        isBusy = true
+        expiryTimer?.invalidate()
+        publishState()
+        GuardRunner.run(arguments: arguments) { [weak self] result in
+            guard let self else { return }
+            self.isBusy = false
+            if self.readResponse(result), self.responseAllowsLaunch(self.lastResponse) {
+                self.didLaunch = true
+                self.publishState()
             } else {
-                self.setStatus("\(prefix)尚有項目未通過，暫時不能啟動 Claude。", color: .systemRed)
-            }
-            self.refreshLaunchAvailability()
-        }
-    }
-
-    private func setBusy(_ busy: Bool) {
-        isBusy = busy
-        recheckButton.isEnabled = !busy
-        refreshLaunchAvailability()
-    }
-
-    private func setStatus(_ message: String, color: NSColor) {
-        statusText.string = message
-        statusText.textColor = color
-    }
-
-    private func render(_ response: GuardResponse) {
-        clear(checksStack)
-        if response.checks.isEmpty {
-            showPlaceholder("沒有檢查項目。", in: checksStack)
-        } else {
-            for check in response.checks {
-                let row = makeCheckRow(check)
-                checksStack.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: checksStack.widthAnchor).isActive = true
-            }
-        }
-
-        clear(permissionsStack)
-        if response.permissions.isEmpty {
-            showPlaceholder("沒有額外權限資料。", in: permissionsStack)
-        } else {
-            for permission in response.permissions {
-                let row = makePermissionRow(permission)
-                permissionsStack.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: permissionsStack.widthAnchor).isActive = true
+                self.performCheck()
             }
         }
     }
 
-    private func makeCheckRow(_ check: GuardCheck) -> NSView {
-        let symbol = NSTextField(labelWithString: statusPresentation(check.status).symbol)
-        symbol.font = .systemFont(ofSize: 15, weight: .semibold)
-        symbol.textColor = statusPresentation(check.status).color
-        symbol.alignment = .center
-        symbol.translatesAutoresizingMaskIntoConstraints = false
-        symbol.widthAnchor.constraint(equalToConstant: 20).isActive = true
-
-        let title = NSTextField(wrappingLabelWithString: check.title)
-        title.font = .systemFont(ofSize: 13, weight: .medium)
-        let detail = NSTextField(wrappingLabelWithString: check.detail)
-        detail.font = .systemFont(ofSize: 12)
-        detail.textColor = .secondaryLabelColor
-        let text = NSStackView(views: [title, detail])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-
-        let row = NSStackView(views: [symbol, text])
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
-        row.wantsLayer = true
-        row.layer?.cornerRadius = 8
-        row.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
+    private func publishState() {
+        guard pageReady else { return }
+        var blockers = lastResponse.map { blockingItems(for: $0).map(\.title) } ?? []
+        if let response = lastResponse, !isResponseFresh(response) { blockers.append("檢查結果已過期，請重新檢查") }
+        var state: [String: Any] = [
+            "busy": isBusy,
+            "canLaunch": !isBusy && !didLaunch && responseAllowsLaunch(lastResponse),
+            "launched": didLaunch,
+            "blockers": blockers,
+            "riskAccepted": acceptedHostingSnapshotKey(for: lastResponse) != nil,
+            "response": lastPayload,
+        ]
+        if let errorMessage { state["error"] = errorMessage }
+        webView.callAsyncJavaScript("window.guardUI.update(state)", arguments: ["state": state], in: nil, in: .page) { _ in }
     }
 
-    private func makePermissionRow(_ permission: GuardPermission) -> NSView {
-        let name = NSTextField(wrappingLabelWithString: permission.name)
-        name.font = .systemFont(ofSize: 12, weight: .medium)
-        let detail = NSTextField(wrappingLabelWithString: permission.detail)
-        detail.font = .systemFont(ofSize: 12)
-        detail.textColor = .secondaryLabelColor
-        let row = NSStackView(views: [name, detail])
-        row.orientation = .vertical
-        row.alignment = .leading
-        row.spacing = 2
-        row.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        row.wantsLayer = true
-        row.layer?.cornerRadius = 8
-        row.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
-    }
-
-    private func showPlaceholder(_ value: String, in stack: NSStackView) {
-        clear(stack)
-        let label = NSTextField(wrappingLabelWithString: value)
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(label)
-    }
-
-    private func clear(_ stack: NSStackView) {
-        for view in stack.arrangedSubviews {
-            stack.removeArrangedSubview(view)
-            view.removeFromSuperview()
+    private func scheduleExpiry() {
+        expiryTimer?.invalidate()
+        guard responseAllowsLaunch(lastResponse) else { return }
+        expiryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            if !self.responseAllowsLaunch(self.lastResponse) {
+                timer.invalidate()
+                self.publishState()
+            }
         }
     }
 
-    private func statusPresentation(_ status: CheckStatus) -> (symbol: String, color: NSColor) {
-        switch status {
-        case .pass:
-            return ("✓", .systemGreen)
-        case .fail:
-            return ("×", .systemRed)
-        case .unknown:
-            return ("?", .systemOrange)
-        case .info:
-            return ("i", .secondaryLabelColor)
+    private func blockingItems(for response: GuardResponse) -> [GuardCheck] {
+        var items = response.checks.filter(isBlockingCheck)
+        let presentIDs = Set(response.checks.map(\.id))
+
+        for id in requiredLaunchCheckIDs.subtracting(presentIDs).sorted() {
+            items.append(
+                GuardCheck(
+                    id: "missing_\(id)",
+                    title: "缺少必需檢查（\(id)）",
+                    status: .unknown,
+                    detail: "檢查結果未包含此必需項目，不能判定為已通過。"
+                )
+            )
         }
+
+        let duplicateIDs = Dictionary(grouping: response.checks, by: \.id)
+            .filter { !$0.key.isEmpty && $0.value.count > 1 }
+            .keys
+            .sorted()
+        if !duplicateIDs.isEmpty {
+            items.append(
+                GuardCheck(
+                    id: "invalid_duplicate_ids",
+                    title: "檢查資料格式有誤",
+                    status: .unknown,
+                    detail: "發現重複檢查 ID：\(duplicateIDs.joined(separator: "、"))。"
+                )
+            )
+        }
+
+        let invalidFieldCount = response.checks.filter {
+            $0.id.isEmpty || $0.title.isEmpty || $0.detail.isEmpty
+        }.count
+        if invalidFieldCount > 0 {
+            items.append(
+                GuardCheck(
+                    id: "invalid_empty_fields",
+                    title: "檢查資料不完整",
+                    status: .unknown,
+                    detail: "\(invalidFieldCount) 項檢查缺少 ID、名稱或詳情。"
+                )
+            )
+        }
+
+        if !response.canLaunch && items.isEmpty {
+            items.append(
+                GuardCheck(
+                    id: "launch_not_approved",
+                    title: "檢查程式未批准啟動",
+                    status: .fail,
+                    detail: "所有列出的必需項目均顯示通過，但檢查結果仍拒絕啟動。請重新檢查。"
+                )
+            )
+        }
+        return items
+    }
+
+    private func isBlockingCheck(_ check: GuardCheck) -> Bool {
+        if requiredLaunchCheckIDs.contains(check.id) {
+            return check.status != .pass
+        }
+        return check.status == .fail || check.status == .unknown
     }
 
     private func responseAllowsLaunch(_ response: GuardResponse?) -> Bool {
         guard let response, response.canLaunch, !response.checks.isEmpty, isResponseFresh(response) else {
+            return false
+        }
+        if response.hostingAcknowledgement?.eligible == true,
+           acceptedHostingSnapshotKey(for: response) == nil {
             return false
         }
 
@@ -616,23 +526,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return formatter.date(from: value)
     }
 
-    private func refreshLaunchAvailability() {
-        launchButton.isEnabled = !isBusy && responseAllowsLaunch(lastResponse)
-        expiryTimer?.invalidate()
-        guard launchButton.isEnabled else { return }
-        expiryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
-            guard let self else {
-                timer.invalidate()
-                return
-            }
-            if !self.responseAllowsLaunch(self.lastResponse) {
-                timer.invalidate()
-                self.launchButton.isEnabled = false
-                self.setStatus("檢查結果已過期，請重新檢查。", color: .systemOrange)
-            }
-        }
-    }
-
     private func failureSummary(for result: CommandResult, fallback: String) -> String {
         if let launchError = result.launchError {
             return launchError
@@ -664,41 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-#if UI_RENDER_TEST
-extension AppDelegate {
-    func runRenderRegressionHarness() {
-        _ = makeResultsScrollView()
-        let first = GuardResponse(
-            checkedAt: "2026-09-29T00:00:00Z",
-            canLaunch: false,
-            checks: [
-                GuardCheck(id: "first", title: "第一項", status: .pass, detail: "通過"),
-                GuardCheck(id: "second", title: "第二項", status: .unknown, detail: "未確認"),
-            ],
-            permissions: [
-                GuardPermission(name: "相機", detail: "未授權"),
-                GuardPermission(name: "咪高峰", detail: "未授權"),
-            ]
-        )
-        render(first)
-        precondition(checksStack.arrangedSubviews.count == 2)
-        precondition(permissionsStack.arrangedSubviews.count == 2)
-
-        let second = GuardResponse(
-            checkedAt: "2026-09-29T00:00:01Z",
-            canLaunch: false,
-            checks: [GuardCheck(id: "third", title: "第三項", status: .fail, detail: "未通過")],
-            permissions: [GuardPermission(name: "藍牙", detail: "未授權")]
-        )
-        render(second)
-        precondition(checksStack.arrangedSubviews.count == 1)
-        precondition(permissionsStack.arrangedSubviews.count == 1)
-    }
-}
-#endif
-
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
-application.setActivationPolicy(.regular)
 application.run()
