@@ -324,8 +324,7 @@ h1 {
   margin-top: 18px;
 }
 
-.desktop-protection > summary,
-.permissions summary {
+.desktop-protection > summary {
   cursor: pointer;
   color: var(--muted);
   font-size: 13px;
@@ -336,25 +335,33 @@ h1 {
   margin-bottom: 10px;
 }
 
-.permissions {
-  margin-top: 18px;
-  padding: 16px 20px;
+.project-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+  padding: 18px 20px;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: var(--paper);
 }
 
-.permission {
-  padding-top: 14px;
-  font-size: 12px;
+.project-selection h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.project-selection p {
+  margin: 5px 0 0;
   color: var(--muted);
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
-.permission strong {
-  color: var(--ink);
-  display: block;
+.project-selection .secondary {
+  flex-shrink: 0;
 }
 
 [hidden] {

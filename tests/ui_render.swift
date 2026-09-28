@@ -10,7 +10,7 @@ private enum UIRenderRegressionMain {
         let fixture = CommandLine.arguments.count > 2 ? URL(fileURLWithPath: CommandLine.arguments[2]) : nil
         let snapshot = CommandLine.arguments.count > 3 ? URL(fileURLWithPath: CommandLine.arguments[3]) : nil
         try AppDelegate().runRenderRegressionHarness(resourcesURL: resources, fixtureURL: fixture, snapshotURL: snapshot)
-        print("PASS: local WebKit page, native launch gate, expiry, risk binding, and safe text rendering")
+        print("PASS: local WebKit page, CLI launch gate, project selection, shell quoting, expiry, risk binding, and safe text rendering")
     }
 }
 
@@ -51,16 +51,16 @@ extension AppDelegate {
         assertUI("document.querySelector('.logo').complete && document.querySelector('.logo').naturalWidth > 0")
         assertUI("getComputedStyle(document.body).backgroundColor === 'rgb(247, 240, 229)'")
         assertUI("document.querySelector('#environment-checks').children.length === 6")
-        assertUI("document.querySelector('#desktop-checks').children.length === 4")
+        assertUI("document.querySelector('#desktop-checks').children.length === 2")
         assertUI("document.querySelector('#continue-button').disabled")
-        assertUI("document.querySelector('#continue-button').textContent === '開啟 Claude Code'")
+        assertUI("document.querySelector('#continue-button').textContent === '在終端機開啟 Claude Code'")
         assertUI("!document.querySelector('#risk-acceptance-checkbox').checked")
 
         var checks = requiredLaunchCheckIDs.sorted().map {
             ["id": $0, "title": $0, "status": "pass", "detail": "已核實"]
         }
         var payload: [String: Any] = [
-            "checkedAt": ISO8601DateFormatter().string(from: Date()), "canLaunch": true,
+            "target": "cli", "checkedAt": ISO8601DateFormatter().string(from: Date()), "canLaunch": true,
             "checks": checks, "permissions": [],
             "exitContext": ["country": "JP", "ip": "203.0.113.10", "timeZone": "Asia/Tokyo"],
         ]
@@ -72,24 +72,26 @@ extension AppDelegate {
         }
         try load(payload)
         precondition(responseAllowsLaunch(lastResponse))
+        assertUI("document.querySelector('#continue-button').disabled")
+        projectURL = FileManager.default.temporaryDirectory
+        publishState()
         assertUI("!document.querySelector('#continue-button').disabled")
-        assertUI("document.querySelector('#webrtc-detail').textContent.includes('203.0.113.10')")
-        assertUI("document.querySelector('#webrtc-status').textContent === '未量測'")
+        assertUI("document.querySelector('#webrtc-status').textContent === '不適用'")
 
         assertUI("window.guardUI.update({busy: true}); document.querySelector('#continue-button').disabled")
         _ = evaluateUI("window.webkit.messageHandlers.guard.postMessage({action: 'ready'}); true")
         assertUI("!document.querySelector('#continue-button').disabled")
 
         // A required informational result still blocks, regardless of the backend boolean.
-        let installedIndex = checks.firstIndex { $0["id"] == "installed_app" }!
+        let installedIndex = checks.firstIndex { $0["id"] == "installed_cli" }!
         checks[installedIndex]["status"] = "info"
         checks[installedIndex]["detail"] = "<img src=x onerror=alert(1)>"
         payload["checks"] = checks
         try load(payload)
         precondition(!responseAllowsLaunch(lastResponse))
         assertUI("document.querySelector('#continue-button').disabled")
-        assertUI("document.querySelector('#official-app-detail').children.length === 0")
-        assertUI("document.querySelector('#overall-detail').textContent.includes('installed_app')")
+        assertUI("document.querySelector('#official-cli-detail').children.length === 0")
+        assertUI("document.querySelector('#overall-detail').textContent.includes('installed_cli')")
         checks[installedIndex]["status"] = "pass"
         payload["checks"] = checks
 
@@ -124,6 +126,30 @@ extension AppDelegate {
         try load(payload)
         precondition(!responseAllowsLaunch(lastResponse))
         assertUI("document.querySelector('#overall-detail').textContent.includes('缺少')")
+
+        payload["target"] = "desktop"
+        let wrongTarget = CommandResult(exitCode: 0, standardOutput: try JSONSerialization.data(withJSONObject: payload), standardError: Data(), outputWasTruncated: false, errorWasTruncated: false, launchError: nil)
+        precondition(!readResponse(wrongTarget))
+
+        let commandTestDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("CodeGuard-command-test-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: commandTestDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: commandTestDirectory) }
+        let project = commandTestDirectory.appendingPathComponent("project 'quote' $HOME ; echo injected", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
+        let harmlessScript = "import json, pathlib, sys\npathlib.Path(__file__).with_name('invocation.json').write_text(json.dumps(sys.argv[1:]))\n"
+        try harmlessScript.write(to: commandTestDirectory.appendingPathComponent("cli_guard.py"), atomically: true, encoding: .utf8)
+        let command = try makeTerminalCommand(resourcesURL: commandTestDirectory, project: project, snapshotKey: "snapshot' ; echo injection")
+        let permissions = try FileManager.default.attributesOfItem(atPath: command.path)[.posixPermissions] as! NSNumber
+        precondition(permissions.intValue == 0o700)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [command.path]
+        try process.run()
+        process.waitUntilExit()
+        precondition(process.terminationStatus == 0)
+        let recorded = try JSONSerialization.jsonObject(with: Data(contentsOf: commandTestDirectory.appendingPathComponent("invocation.json"))) as! [String]
+        precondition(recorded == ["--launch", "--project", project.path, "--accept-hosting-snapshot", "snapshot' ; echo injection"])
+        precondition(!FileManager.default.fileExists(atPath: command.deletingLastPathComponent().path))
 
         let malformed = CommandResult(exitCode: 0, standardOutput: Data("{}".utf8), standardError: Data(), outputWasTruncated: false, errorWasTruncated: false, launchError: nil)
         precondition(!readResponse(malformed))

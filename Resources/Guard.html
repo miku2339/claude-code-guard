@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Claude 環境檢查</title>
+  <title>CodeGuard</title>
   <link rel="stylesheet" href="Guard.css">
 </head>
 <body>
   <main class="shell">
     <header class="hero">
-      <img class="logo" src="Logo.png" alt="Claude Code Guard">
+      <img class="logo" src="Logo.png" alt="CodeGuard">
       <div>
-        <p class="eyebrow">CLAUDE CODE GUARD</p>
-        <h1>Claude 環境檢查</h1>
-        <p class="intro">確認目前桌面環境，再開啟 Claude。</p>
+        <p class="eyebrow">CODEGUARD</p>
+        <h1>開啟你的專案</h1>
+        <p class="intro">檢查連線環境，再於終端機使用 Claude Code。</p>
       </div>
     </header>
     <section class="summary" aria-live="polite">
@@ -35,18 +35,21 @@
       </span>
     </label>
     <details class="desktop-protection">
-      <summary id="desktop-summary">桌面防護</summary>
-      <section id="desktop-checks" class="checks" aria-label="桌面防護"></section>
+      <summary id="desktop-summary">CLI 與連線防護</summary>
+      <section id="desktop-checks" class="checks" aria-label="CLI 與連線防護"></section>
     </details>
+    <section class="project-selection" aria-label="專案">
+      <div>
+        <h2>專案資料夾</h2>
+        <p id="project-path">尚未選擇</p>
+      </div>
+      <button id="project-button" class="secondary" type="button">選擇專案</button>
+    </section>
     <div class="actions">
-      <button id="continue-button" class="primary" type="button" disabled>開啟 Claude Code</button>
+      <button id="continue-button" class="primary" type="button" disabled>在終端機開啟 Claude Code</button>
       <button id="retry-button" class="secondary" type="button" disabled>重新檢查</button>
     </div>
-    <details class="permissions">
-      <summary>權限資料</summary>
-      <div id="permissions-list"></div>
-    </details>
-    <p class="notice">出口查詢使用 Cloudflare、ipwho.is 及 ProxyCheck。WebRTC 與指紋尚未在官方桌面 App 內量測；檢查結果不能保證帳戶安全或服務可用性。</p>
+    <p class="notice">獨立桌面啟動器。登入與操作批准由原生 CLI 處理；CLI 仍可按其權限設定讀寫檔案及執行指令。連線防護只涵蓋此啟動路徑，不能保證帳戶安全。</p>
   </main>
   <script src="Guard.js" defer></script>
 </body>

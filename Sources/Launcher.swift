@@ -2,18 +2,17 @@ import AppKit
 import Foundation
 import WebKit
 
-private let appName = "claude-code-guard"
+private let appName = "CodeGuard"
 private let maximumProcessOutputBytes = 1_048_576
 private let requiredLaunchCheckIDs: Set<String> = [
-    "installed_app",
+    "installed_cli",
+    "process_guard",
     "proxy_exit",
     "exit_location",
     "exit_reputation",
-    "system_timezone",
-    "app_language",
+    "cli_timezone",
+    "cli_language",
     "network_sandbox",
-    "os_firewall",
-    "tcc_authorization",
 ]
 
 private enum CheckStatus: String, Decodable {
@@ -43,6 +42,7 @@ private struct HostingAcknowledgement: Decodable {
 }
 
 private struct GuardResponse: Decodable {
+    let target: String
     let checkedAt: String
     let canLaunch: Bool
     let checks: [GuardCheck]
@@ -50,12 +50,14 @@ private struct GuardResponse: Decodable {
     let hostingAcknowledgement: HostingAcknowledgement?
 
     init(
+        target: String = "cli",
         checkedAt: String,
         canLaunch: Bool,
         checks: [GuardCheck],
         permissions: [GuardPermission],
         hostingAcknowledgement: HostingAcknowledgement? = nil
     ) {
+        self.target = target
         self.checkedAt = checkedAt
         self.canLaunch = canLaunch
         self.checks = checks
@@ -121,7 +123,7 @@ private enum GuardRunner {
                 return
             }
 
-            let scriptURL = resourcesURL.appendingPathComponent("guard.py", isDirectory: false)
+            let scriptURL = resourcesURL.appendingPathComponent("cli_guard.py", isDirectory: false)
             guard FileManager.default.isReadableFile(atPath: scriptURL.path) else {
                 complete(
                     CommandResult(
@@ -130,7 +132,7 @@ private enum GuardRunner {
                         standardError: Data(),
                         outputWasTruncated: false,
                         errorWasTruncated: false,
-                        launchError: "找不到檢查程式 guard.py。"
+                        launchError: "找不到檢查程式 cli_guard.py。"
                     ),
                     with: completion
                 )
@@ -141,7 +143,7 @@ private enum GuardRunner {
             let outputPipe = Pipe()
             let errorPipe = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = [scriptURL.path] + arguments
+            process.arguments = ["-B", "-I", scriptURL.path] + arguments
             process.currentDirectoryURL = resourcesURL
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = outputPipe
@@ -223,6 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     private var lastResponse: GuardResponse?
     private var lastPayload: [String: Any] = [:]
     private var hostingSnapshotKey: String?
+    private var projectURL: URL?
+    private var isChoosingProject = false
     private var isBusy = false
     private var errorMessage: String?
     private var didLaunch = false
@@ -299,7 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     private func showPageFailure() {
         let alert = NSAlert()
         alert.messageText = "介面未能載入"
-        alert.informativeText = "請重新開啟 claude-code-guard。"
+        alert.informativeText = "請重新開啟 CodeGuard。"
         alert.beginSheetModal(for: window)
     }
 
@@ -316,10 +320,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             performCheck()
             return
         }
-        guard pageReady, !isBusy else { return }
+        guard pageReady, !isBusy, !isChoosingProject else { return }
         switch action {
         case "check": performCheck()
         case "launch": launchClaude()
+        case "chooseProject": chooseProject()
         case "risk":
             guard let accepted = body["accepted"] as? Bool,
                   let acknowledgement = lastResponse?.hostingAcknowledgement,
@@ -341,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     private func readResponse(_ result: CommandResult) -> Bool {
         guard result.launchError == nil, result.exitCode == 0, !result.outputWasTruncated,
               let response = try? JSONDecoder().decode(GuardResponse.self, from: result.standardOutput),
+              response.target == "cli",
               let payload = try? JSONSerialization.jsonObject(with: result.standardOutput) as? [String: Any] else {
             lastResponse = nil
             lastPayload = [:]
@@ -375,22 +381,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
-    private func launchClaude() {
-        guard !isBusy, !didLaunch, responseAllowsLaunch(lastResponse) else { return }
-        var arguments = ["--launch"]
-        if let key = acceptedHostingSnapshotKey(for: lastResponse) { arguments += ["--accept-hosting-snapshot", key] }
-        isBusy = true
-        expiryTimer?.invalidate()
+    private func chooseProject() {
+        let panel = NSOpenPanel()
+        panel.title = "選擇專案資料夾"
+        panel.prompt = "選擇專案"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.directoryURL = projectURL
+        isChoosingProject = true
         publishState()
-        GuardRunner.run(arguments: arguments) { [weak self] result in
+        panel.beginSheetModal(for: window) { [weak self] result in
             guard let self else { return }
-            self.isBusy = false
-            if self.readResponse(result), self.responseAllowsLaunch(self.lastResponse) {
-                self.didLaunch = true
-                self.publishState()
-            } else {
-                self.performCheck()
+            self.isChoosingProject = false
+            if result == .OK, let url = panel.url, self.isProjectDirectory(url) {
+                self.projectURL = url.standardizedFileURL
+                self.didLaunch = false
             }
+            self.publishState()
+        }
+    }
+
+    private func isProjectDirectory(_ url: URL?) -> Bool {
+        guard let url, url.isFileURL else { return false }
+        var directory = ObjCBool(false)
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func terminalCommand(resourcesURL: URL, project: URL, snapshotKey: String?) -> String {
+        var arguments = ["/usr/bin/python3", "-B", "-I", resourcesURL.appendingPathComponent("cli_guard.py").path,
+                         "--launch", "--project", project.path]
+        if let snapshotKey { arguments += ["--accept-hosting-snapshot", snapshotKey] }
+        return "#!/bin/zsh\nset -eu\n/bin/rm -f -- \"$0\"\n/bin/rmdir -- \"${0:A:h}\" 2>/dev/null || true\nexec "
+            + arguments.map(shellQuote).joined(separator: " ") + "\n"
+    }
+
+    private func makeTerminalCommand(resourcesURL: URL, project: URL, snapshotKey: String?) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CodeGuard-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let command = directory.appendingPathComponent("Open Project.command")
+        do {
+            try Data(terminalCommand(resourcesURL: resourcesURL, project: project, snapshotKey: snapshotKey).utf8).write(to: command, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: command.path)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+        return command
+    }
+
+    private func launchClaude() {
+        guard !isBusy, !isChoosingProject, !didLaunch, responseAllowsLaunch(lastResponse),
+              let project = projectURL, isProjectDirectory(project),
+              let resources = Bundle.main.resourceURL else { return }
+        guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
+            errorMessage = "找不到 macOS 終端機。"
+            publishState()
+            return
+        }
+        do {
+            let command = try makeTerminalCommand(resourcesURL: resources, project: project, snapshotKey: acceptedHostingSnapshotKey(for: lastResponse))
+            isBusy = true
+            expiryTimer?.invalidate()
+            publishState()
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.open([command], withApplicationAt: terminal, configuration: configuration) { [weak self] _, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.isBusy = false
+                    if error == nil {
+                        self.didLaunch = true
+                    } else {
+                        try? FileManager.default.removeItem(at: command.deletingLastPathComponent())
+                        self.errorMessage = "未能開啟終端機，請重新檢查後再試。"
+                    }
+                    self.publishState()
+                }
+            }
+        } catch {
+            errorMessage = "未能建立本次啟動指令。"
+            publishState()
         }
     }
 
@@ -400,7 +476,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         if let response = lastResponse, !isResponseFresh(response) { blockers.append("檢查結果已過期，請重新檢查") }
         var state: [String: Any] = [
             "busy": isBusy,
-            "canLaunch": !isBusy && !didLaunch && responseAllowsLaunch(lastResponse),
+            "canLaunch": !isBusy && !isChoosingProject && !didLaunch && isProjectDirectory(projectURL) && responseAllowsLaunch(lastResponse),
+            "checksPassed": responseAllowsLaunch(lastResponse),
+            "projectPath": projectURL?.path ?? "",
+            "projectChoosing": isChoosingProject,
             "launched": didLaunch,
             "blockers": blockers,
             "riskAccepted": acceptedHostingSnapshotKey(for: lastResponse) != nil,
@@ -487,7 +566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     private func responseAllowsLaunch(_ response: GuardResponse?) -> Bool {
-        guard let response, response.canLaunch, !response.checks.isEmpty, isResponseFresh(response) else {
+        guard let response, response.target == "cli", response.canLaunch, !response.checks.isEmpty, isResponseFresh(response) else {
             return false
         }
         if response.hostingAcknowledgement?.eligible == true,

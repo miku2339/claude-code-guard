@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "templates": {
+    "launcher": {
+      "path": "~/bin/claude",
+      "sha256": "f0e21458b7875aee5ed51d6ae0b6e2490f84e740ab22a2ddd9d9918bc3499d87"
+    },
+    "processWrapper": {
+      "path": "~/.local/share/claude-network-guard/claude-process-wrapper.zsh",
+      "sha256": "d0966d623ed0e2f474b3c47c5e1d8069b0712e405c24c82c5780d9661021868c"
+    },
+    "sandboxProfile": {
+      "path": "~/.local/share/claude-network-guard/claude-proxy-only.sb",
+      "sha256": "d409f4f655c3770b05d13d3d6ee0b925e32c646e26a749b36cf3050b4556eb6a"
+    }
+  }
+}

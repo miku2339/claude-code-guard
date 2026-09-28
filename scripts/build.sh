@@ -4,12 +4,12 @@ set -eu
 readonly PROJECT_DIR="${0:A:h:h}"
 readonly SOURCE_FILE="$PROJECT_DIR/Sources/Launcher.swift"
 readonly RESOURCE_DIR="$PROJECT_DIR/Resources"
-readonly DIST_DIR="$PROJECT_DIR/dist"
-readonly OUTPUT_APP="$DIST_DIR/claude-code-guard.app"
-readonly BACKUP_APP="$DIST_DIR/claude-code-guard.app.latest-backup"
+readonly DIST_DIR="${CODEGUARD_OUTPUT_DIR:-$PROJECT_DIR/dist}"
+readonly OUTPUT_APP="$DIST_DIR/CodeGuard.app"
+readonly BACKUP_APP="$DIST_DIR/CodeGuard.app.latest-backup"
 readonly STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-code-guard-build.XXXXXX")"
-readonly STAGING_APP="$STAGING_DIR/claude-code-guard.app"
-readonly EXECUTABLE_NAME="ClaudeCodeGuard"
+readonly STAGING_APP="$STAGING_DIR/CodeGuard.app"
+readonly EXECUTABLE_NAME="CodeGuard"
 
 cleanup() {
   /usr/bin/find "$STAGING_DIR" -depth -delete 2>/dev/null || true
@@ -36,9 +36,17 @@ fi
 /bin/cp "$RESOURCE_DIR/guard.py" "$STAGING_APP/Contents/Resources/guard.py"
 /bin/cp "$RESOURCE_DIR/EnvironmentPolicy.json" "$STAGING_APP/Contents/Resources/EnvironmentPolicy.json"
 
-for asset in Guard.html Guard.css Guard.js Logo.png; do
+for asset in Guard.html Guard.css Guard.js Logo.png cli_guard.py CLIProtection.json; do
   /bin/cp "$RESOURCE_DIR/$asset" "$STAGING_APP/Contents/Resources/$asset"
 done
+
+readonly ICONSET="$STAGING_DIR/AppIcon.iconset"
+/bin/mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  /usr/bin/sips -z "$size" "$size" "$RESOURCE_DIR/Logo.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  /usr/bin/sips -z "$((size * 2))" "$((size * 2))" "$RESOURCE_DIR/Logo.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+/usr/bin/iconutil --convert icns "$ICONSET" --output "$STAGING_APP/Contents/Resources/AppIcon.icns"
 
 /usr/bin/swiftc -O -target arm64-apple-macos13.0 -framework AppKit -framework WebKit \
   "$SOURCE_FILE" \
