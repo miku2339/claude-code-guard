@@ -1,8 +1,8 @@
-# Claude Desktop Guard
+# claude-code-guard
 
 > **ALPHA — 診斷式啟動閘門原型**
 
-Claude Desktop Guard 是獨立的 macOS 原型，在提供啟動官方 Claude Desktop 前，檢查一組範圍明確的本機條件。現時系統會**刻意保持鎖定**：自建系統防火牆尚未實作或部署，macOS TCC 授權亦未能核實，因此目前版本不會啟用「啟動 Claude」按鈕。
+claude-code-guard 是獨立的 macOS 原型，在提供啟動官方 Claude Desktop 前，檢查一組範圍明確的本機條件。現時系統會**刻意保持鎖定**：自建系統防火牆尚未實作或部署，macOS TCC 授權亦未能核實，因此目前版本不會啟用「啟動 Claude」按鈕。
 
 本專案獨立於 Anthropic。目前提供環境診斷；系統層網絡封鎖仍未完成。
 
@@ -39,7 +39,7 @@ Claude Desktop Guard 是獨立的 macOS 原型，在提供啟動官方 Claude De
 ./scripts/build.sh
 ```
 
-腳本會編譯 arm64 AppKit App，並把 ad-hoc 簽署的結果放於 `dist/Claude 啟動檢查.app`。此 ad-hoc 簽章只供本機啟動閘門使用，不能提供 Network Extension 防火牆所需的受限制 entitlement。
+腳本會編譯 arm64 AppKit App，並把 ad-hoc 簽署的結果放於 `dist/claude-code-guard.app`。此 ad-hoc 簽章只供本機啟動閘門使用，不能提供 Network Extension 防火牆所需的受限制 entitlement。
 
 執行測試：
 

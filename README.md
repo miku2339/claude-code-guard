@@ -1,8 +1,8 @@
-# Claude Desktop Guard
+# claude-code-guard
 
 > **ALPHA — diagnostic launch-gate prototype**
 
-Claude Desktop Guard is an independent macOS prototype that checks a narrowly defined local environment before offering to launch the official Claude Desktop application. It is currently **locked by design**: the custom system firewall has not been implemented or deployed, and macOS TCC authorization cannot yet be verified. The current build therefore does not enable the launch button.
+claude-code-guard is an independent macOS prototype that checks a narrowly defined local environment before offering to launch the official Claude Desktop application. It is currently **locked by design**: the custom system firewall has not been implemented or deployed, and macOS TCC authorization cannot yet be verified. The current build therefore does not enable the launch button.
 
 This project is independent from Anthropic. This alpha provides environment diagnostics; system-level network enforcement is not implemented.
 
@@ -39,7 +39,7 @@ Build the local app:
 ./scripts/build.sh
 ```
 
-The script compiles an arm64 AppKit app and places the ad-hoc-signed result at `dist/Claude 啟動檢查.app`. The ad-hoc signature is only for this local launch-gate app; it cannot provide the restricted entitlements required by a Network Extension firewall.
+The script compiles an arm64 AppKit app and places the ad-hoc-signed result at `dist/claude-code-guard.app`. The ad-hoc signature is only for this local launch-gate app; it cannot provide the restricted entitlements required by a Network Extension firewall.
 
 Run the tests:
 

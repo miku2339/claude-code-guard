@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-private let appName = "Claude 啟動檢查"
+private let appName = "claude-code-guard"
 private let maximumProcessOutputBytes = 1_048_576
 private let requiredLaunchCheckIDs: Set<String> = [
     "installed_app",

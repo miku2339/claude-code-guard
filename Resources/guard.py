@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Desktop Guard 的唯讀安全預檢。"""
+"""claude-code-guard 的唯讀安全預檢。"""
 
 from __future__ import annotations
 

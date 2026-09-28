@@ -5,11 +5,11 @@ readonly PROJECT_DIR="${0:A:h:h}"
 readonly SOURCE_FILE="$PROJECT_DIR/Sources/Launcher.swift"
 readonly RESOURCE_DIR="$PROJECT_DIR/Resources"
 readonly DIST_DIR="$PROJECT_DIR/dist"
-readonly OUTPUT_APP="$DIST_DIR/Claude 啟動檢查.app"
-readonly BACKUP_APP="$DIST_DIR/Claude 啟動檢查.app.latest-backup"
-readonly STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-desktop-guard-build.XXXXXX")"
-readonly STAGING_APP="$STAGING_DIR/Claude 啟動檢查.app"
-readonly EXECUTABLE_NAME="ClaudeDesktopGuard"
+readonly OUTPUT_APP="$DIST_DIR/claude-code-guard.app"
+readonly BACKUP_APP="$DIST_DIR/claude-code-guard.app.latest-backup"
+readonly STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-code-guard-build.XXXXXX")"
+readonly STAGING_APP="$STAGING_DIR/claude-code-guard.app"
+readonly EXECUTABLE_NAME="ClaudeCodeGuard"
 
 cleanup() {
   /usr/bin/find "$STAGING_DIR" -depth -delete 2>/dev/null || true
