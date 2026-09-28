@@ -1,0 +1,10 @@
+.DS_Store
+.build*/
+dist/
+__pycache__/
+*.py[cod]
+*.zip
+*.dmg
+*.p12
+*.mobileprovision
+*.provisionprofile
