@@ -20,7 +20,7 @@ Claude Desktop Guard 是獨立的 macOS 原型，在提供啟動官方 Claude De
 
 ## 目前安全邊界
 
-啟動器會以本機 `sandbox-exec` profile 直接啟動已核實的 Claude 執行檔。這只涵蓋經此受保護路徑啟動的程序。直接開啟官方 App、Finder、Dock、Launch Services、URL scheme、login item 及官方 updater 均不受本原型控制。
+目前鎖定的啟動路徑會使用本機 `sandbox-exec` profile，限制經該路徑啟動的程序。直接開啟官方 App、Finder、Dock、Launch Services、URL scheme、login item 及官方 updater 均不受本原型控制。
 
 自建 Network Extension 防火牆仍在規劃，尚未實作、簽署、批准、安裝或測試。受 macOS 支援的部署需要付費 Apple Developer Team、合適的 Developer ID 簽署與 provisioning、Network Extension 及 System Extension entitlement、公證，以及用戶批准 System Extension 和 Network Filter。本專案不需要亦不建議關閉 System Integrity Protection。
 
@@ -45,6 +45,7 @@ Claude Desktop Guard 是獨立的 macOS 原型，在提供啟動官方 Claude De
 
 ```sh
 python3 -B -m unittest discover -s tests -v
+./scripts/test-ui.sh
 ```
 
 ## 本機設定

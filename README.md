@@ -4,7 +4,7 @@
 
 Claude Desktop Guard is an independent macOS prototype that checks a narrowly defined local environment before offering to launch the official Claude Desktop application. It is currently **locked by design**: the custom system firewall has not been implemented or deployed, and macOS TCC authorization cannot yet be verified. The current build therefore does not enable the launch button.
 
-This project is not a completed kill switch, firewall, VPN, residency verifier, account eligibility checker, or account enforcement avoidance tool. It is not affiliated with or endorsed by Anthropic.
+This project is independent from Anthropic. This alpha provides environment diagnostics; system-level network enforcement is not implemented.
 
 [繁體中文](README.zh-Hant.md)
 
@@ -20,7 +20,7 @@ This project is not a completed kill switch, firewall, VPN, residency verifier, 
 
 ## Current security boundary
 
-The launcher directly starts the verified Claude executable under a local `sandbox-exec` profile. This covers only a process started through this guarded path. Direct launches of the official app, Finder, Dock, Launch Services, URL schemes, login items, and the official updater are not controlled by this prototype.
+The currently disabled launch path is designed to start the verified Claude executable under a local `sandbox-exec` profile. That boundary would cover only a process started through the guarded path. Direct launches of the official app, Finder, Dock, Launch Services, URL schemes, login items, and the official updater are not controlled by this prototype.
 
 A custom Network Extension firewall is planned but has not been implemented, signed, approved, installed, or tested. A supported macOS deployment requires a paid Apple Developer team, suitable Developer ID signing and provisioning, Network Extension and System Extension entitlements, notarization, and user approval of the System Extension and Network Filter. This project does not require or recommend disabling System Integrity Protection.
 
@@ -45,6 +45,7 @@ Run the tests:
 
 ```sh
 python3 -B -m unittest discover -s tests -v
+./scripts/test-ui.sh
 ```
 
 ## Local configuration

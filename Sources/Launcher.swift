@@ -486,7 +486,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showPlaceholder("沒有檢查項目。", in: checksStack)
         } else {
             for check in response.checks {
-                checksStack.addArrangedSubview(makeCheckRow(check))
+                let row = makeCheckRow(check)
+                checksStack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: checksStack.widthAnchor).isActive = true
             }
         }
 
@@ -495,7 +497,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showPlaceholder("沒有額外權限資料。", in: permissionsStack)
         } else {
             for permission in response.permissions {
-                permissionsStack.addArrangedSubview(makePermissionRow(permission))
+                let row = makePermissionRow(permission)
+                permissionsStack.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: permissionsStack.widthAnchor).isActive = true
             }
         }
     }
@@ -527,7 +531,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         row.layer?.cornerRadius = 8
         row.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalTo: checksStack.widthAnchor).isActive = true
         return row
     }
 
@@ -546,7 +549,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         row.layer?.cornerRadius = 8
         row.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalTo: permissionsStack.widthAnchor).isActive = true
         return row
     }
 
@@ -661,6 +663,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return text.isEmpty ? fallback : "\(fallback) \(text)"
     }
 }
+
+#if UI_RENDER_TEST
+extension AppDelegate {
+    func runRenderRegressionHarness() {
+        _ = makeResultsScrollView()
+        let first = GuardResponse(
+            checkedAt: "2026-09-29T00:00:00Z",
+            canLaunch: false,
+            checks: [
+                GuardCheck(id: "first", title: "第一項", status: .pass, detail: "通過"),
+                GuardCheck(id: "second", title: "第二項", status: .unknown, detail: "未確認"),
+            ],
+            permissions: [
+                GuardPermission(name: "相機", detail: "未授權"),
+                GuardPermission(name: "咪高峰", detail: "未授權"),
+            ]
+        )
+        render(first)
+        precondition(checksStack.arrangedSubviews.count == 2)
+        precondition(permissionsStack.arrangedSubviews.count == 2)
+
+        let second = GuardResponse(
+            checkedAt: "2026-09-29T00:00:01Z",
+            canLaunch: false,
+            checks: [GuardCheck(id: "third", title: "第三項", status: .fail, detail: "未通過")],
+            permissions: [GuardPermission(name: "藍牙", detail: "未授權")]
+        )
+        render(second)
+        precondition(checksStack.arrangedSubviews.count == 1)
+        precondition(permissionsStack.arrangedSubviews.count == 1)
+    }
+}
+#endif
 
 let application = NSApplication.shared
 let delegate = AppDelegate()
