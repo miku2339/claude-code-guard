@@ -49,7 +49,7 @@
       row("network", "網絡出口", network.status, network.detail),
       row("reputation", "IP 信譽", accepted ? "info" : reputation.status, riskDetail, accepted ? "已確認風險" : undefined),
       row("timezone", "CLI 啟動時區", timezone.status, timezone.detail),
-      row("webrtc", "WebRTC 與瀏覽器指紋", "info", "純 CLI 不含瀏覽器；另行開啟的登入瀏覽器需獨立保護。", "不適用"),
+      row("webrtc", "WebRTC 與瀏覽器指紋", "info", "純 CLI 不含瀏覽器；登入由 Claude Chrome 另行檢查瀏覽器環境。", "不適用"),
       row("language", "CLI 啟動語言", language.status, language.detail),
       row("process", "受保護啟動入口", get("process_guard").status, get("process_guard").detail),
     ];

@@ -36,7 +36,7 @@ fi
 /bin/cp "$RESOURCE_DIR/guard.py" "$STAGING_APP/Contents/Resources/guard.py"
 /bin/cp "$RESOURCE_DIR/EnvironmentPolicy.json" "$STAGING_APP/Contents/Resources/EnvironmentPolicy.json"
 
-for asset in Guard.html Guard.css Guard.js Logo.png cli_guard.py CLIProtection.json; do
+for asset in Guard.html Guard.css Guard.js Logo.png cli_guard.py browser_entry.py CLIProtection.json; do
   /bin/cp "$RESOURCE_DIR/$asset" "$STAGING_APP/Contents/Resources/$asset"
 done
 

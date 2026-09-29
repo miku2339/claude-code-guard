@@ -9,7 +9,7 @@
 1. 開啟 CodeGuard，查看每項檢查及未通過原因。
 2. 選擇專案資料夾。
 3. 通過檢查後，按「在終端機開啟 Claude Code」。終端機會重新檢查，通過才執行 CLI。
-4. 登入、對話及工具批准均在原生 CLI 進行。
+4. 官方登入連結由 Claude Chrome 接收；瀏覽器檢查通過後，按「繼續 Claude Code 登入」。對話及工具批准均在原生 CLI 進行。
 
 機房出口預設不通過。僅當完整信譽資料顯示只有 `hosting` 風險時，可由使用者確認承擔該出口及分數風險。此確認預設未選、只保存在 App 本輪記憶體，綁定本次 IP、地區、供應商、風險及查詢時間；出口或快照改變會失效。
 
@@ -50,6 +50,7 @@ Anthropic 對產品中執行 Claude Code 訂有 Commercial Terms、原樣 binary
 - 官方原生 CLI：`~/.local/bin/claude` → `~/.local/share/claude/versions/…`。
 - 已配置 `~/bin/claude`、`~/.local/share/claude-network-guard/claude-process-wrapper.zsh` 及 `claude-proxy-only.sb`，內容須符合 `Resources/CLIProtection.json`。
 - 已有 `127.0.0.1:17897` HTTP 代理；上游須固定且沒有直接連線後備路徑。
+- 已安裝支援 `--login-url` 的 Claude Chrome，並將 `BROWSER` 指向本機 `claude-code-browser.py` 入口。使用者 LaunchAgent 在 CLI 沙盒外執行交接服務，沙盒只放行該私人 Unix socket；服務未啟動或版本不一致會阻止啟動。
 
 目前版本沿用既有本機保護設定，未提供跨機自動配置器。缺少設定時會明確阻擋。
 

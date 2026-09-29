@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 RESOURCE_DIRECTORY = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(RESOURCE_DIRECTORY))
 import guard
+import browser_entry
 
 
 EXPECTED_IDENTIFIER = "com.anthropic.claude-code"
@@ -28,12 +29,16 @@ CLI_SYMLINK = pathlib.Path.home() / ".local/bin/claude"
 CLI_VERSIONS_ROOT = pathlib.Path.home() / ".local/share/claude/versions"
 PROCESS_WRAPPER = pathlib.Path.home() / ".local/share/claude-network-guard/claude-process-wrapper.zsh"
 SANDBOX_PROFILE = pathlib.Path.home() / ".local/share/claude-network-guard/claude-proxy-only.sb"
+BROWSER_ENTRY = pathlib.Path.home() / ".local/share/claude-network-guard/claude-code-browser.py"
+BROWSER_AGENT = pathlib.Path.home() / "Library/LaunchAgents/local.claude-code-guard.browser-broker.plist"
 PROTECTED_PATHS = {
     "launcher": CLI_LAUNCHER,
     "processWrapper": PROCESS_WRAPPER,
     "sandboxProfile": SANDBOX_PROFILE,
+    "loginBrowser": BROWSER_ENTRY,
+    "loginBrowserAgent": BROWSER_AGENT,
 }
-EXECUTABLE_TEMPLATES = frozenset({"launcher", "processWrapper"})
+EXECUTABLE_TEMPLATES = frozenset({"launcher", "processWrapper", "loginBrowser"})
 REQUIRED_LAUNCH_CHECK_IDS = frozenset({
     "installed_cli",
     "process_guard",
@@ -101,7 +106,9 @@ def verify_process_guard() -> dict[str, str]:
             return guard.check("process_guard", "CLI 程序保護", "fail", f"{name} 不是由目前使用者持有的安全一般檔案。")
         if digest != expected[name]:
             return guard.check("process_guard", "CLI 程序保護", "fail", f"{name} 與已核實模板不一致。")
-    return guard.check("process_guard", "CLI 程序保護", "pass", "啟動器、程序 wrapper 與 sandbox profile 均符合已核實模板及檔案權限。")
+    if not browser_entry.broker_is_ready():
+        return guard.check("process_guard", "CLI 程序保護", "fail", "本機登入通道未啟動或版本不一致。")
+    return guard.check("process_guard", "CLI 程序保護", "pass", "啟動器、程序 wrapper、sandbox profile 及 Claude Chrome 登入入口均符合已核實模板及檔案權限。")
 
 
 def signing_identity(binary: pathlib.Path) -> tuple[str, str] | None:
@@ -262,6 +269,7 @@ def launch_environment(settings: dict[str, str]) -> dict[str, str]:
         raise ValueError("invalid launch settings")
     environment = os.environ.copy()
     environment.update(settings)
+    environment["BROWSER"] = str(BROWSER_ENTRY)
     return environment
 
 

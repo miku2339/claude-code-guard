@@ -9,7 +9,7 @@ An independent macOS launcher that checks the connection environment, lets you c
 1. Open CodeGuard and review the checks and blocking reasons.
 2. Choose a project folder.
 3. Once checks pass, open Claude Code in Terminal. The terminal entry point checks again before executing the CLI.
-4. Sign-in, conversations, and tool approvals stay in the original CLI.
+4. Claude Chrome receives the official sign-in link. Once its checks pass, continue to Claude Code sign-in. Conversations and tool approvals stay in the original CLI.
 
 Hosting exits are blocked by default. A complete reputation snapshot with only the `hosting` flag may be acknowledged by the user. Consent starts unchecked, stays in app memory, and is bound to the observed IP, geography, provider, scores, flags, and assessment time. A changed exit or refreshed snapshot invalidates it.
 
@@ -50,6 +50,7 @@ Sources: [official product integration and authentication rules](https://code.cl
 - Official native CLI: `~/.local/bin/claude` → `~/.local/share/claude/versions/…`.
 - Existing `~/bin/claude`, `~/.local/share/claude-network-guard/claude-process-wrapper.zsh`, and `claude-proxy-only.sb`, matching `Resources/CLIProtection.json`.
 - Existing HTTP proxy at `127.0.0.1:17897`, with a fixed upstream and no direct fallback.
+- Claude Chrome with `--login-url` support, and `BROWSER` pointing to the local `claude-code-browser.py` entry point. A user LaunchAgent runs its broker outside the CLI sandbox; the sandbox permits only that private Unix socket. Missing or stale broker versions block launch.
 
 This version uses the existing local protection configuration; it does not provision other machines automatically. Missing prerequisites are reported as blockers.
 

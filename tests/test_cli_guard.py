@@ -61,7 +61,7 @@ class ProtectionTests(unittest.TestCase):
                 path.write_text(name)
                 path.chmod(0o700 if name in cli_guard.EXECUTABLE_TEMPLATES else 0o600)
                 hashes[name] = cli_guard.secure_file_digest(path, name in cli_guard.EXECUTABLE_TEMPLATES)
-            with mock.patch.object(cli_guard, "PROTECTED_PATHS", files), mock.patch.object(cli_guard, "load_protection_metadata", return_value=hashes):
+            with mock.patch.object(cli_guard, "PROTECTED_PATHS", files), mock.patch.object(cli_guard, "load_protection_metadata", return_value=hashes), mock.patch.object(cli_guard.browser_entry, "broker_is_ready", return_value=True):
                 self.assertEqual(cli_guard.verify_process_guard()["status"], "pass")
                 files["launcher"].write_text("changed")
                 self.assertEqual(cli_guard.verify_process_guard()["status"], "fail")
@@ -153,6 +153,7 @@ class GateAndLaunchTests(unittest.TestCase):
         self.assertEqual(path, str(cli_guard.CLI_LAUNCHER))
         self.assertEqual(arguments, ["claude"])
         self.assertEqual(environment["EXISTING_AUTH_REFERENCE"], "preserved")
+        self.assertEqual(environment["BROWSER"], str(cli_guard.BROWSER_ENTRY))
         self.assertEqual({name: environment[name] for name in settings}, settings)
 
     def test_local_integrity_change_before_exec_is_rejected(self):

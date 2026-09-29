@@ -3,7 +3,7 @@
   "templates": {
     "launcher": {
       "path": "~/bin/claude",
-      "sha256": "f0e21458b7875aee5ed51d6ae0b6e2490f84e740ab22a2ddd9d9918bc3499d87"
+      "sha256": "ad792ab574bf9ec35ce1862bbb2e33d972e9d7c5cf278373dc4db60d47d6b9f4"
     },
     "processWrapper": {
       "path": "~/.local/share/claude-network-guard/claude-process-wrapper.zsh",
@@ -11,7 +11,15 @@
     },
     "sandboxProfile": {
       "path": "~/.local/share/claude-network-guard/claude-proxy-only.sb",
-      "sha256": "d409f4f655c3770b05d13d3d6ee0b925e32c646e26a749b36cf3050b4556eb6a"
+      "sha256": "d4ab1de705b667759494536b4143b57353d0f75a5ab836c6bfff4e734f854285"
+    },
+    "loginBrowser": {
+      "path": "~/.local/share/claude-network-guard/claude-code-browser.py",
+      "sha256": "971a3372c12b9c62ea7489d1ee8593b11b5d43b74c1c6306db0497a42dcb21d5"
+    },
+    "loginBrowserAgent": {
+      "path": "~/Library/LaunchAgents/local.claude-code-guard.browser-broker.plist",
+      "sha256": "da17e44443b05b01eff977ef3f8d1499f8af9bda286a1f6d0ff364c63d207b56"
     }
   }
 }
