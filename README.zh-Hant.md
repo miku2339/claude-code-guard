@@ -73,4 +73,4 @@ python3 -B -m unittest discover -s tests -v
 
 ## 授權
 
-[MIT](LICENSE)。環境檢查頁的基礎樣式沿用 [Claude Chrome](https://github.com/miku233333/claude-chrome) 的 MIT 資源。CodeGuard 使用獨立圖標及產品名稱。
+[MIT](LICENSE)。環境檢查頁的基礎樣式沿用 [Claude Chrome](https://github.com/miku2339/claude-chrome) 的 MIT 資源。CodeGuard 使用獨立圖標及產品名稱。

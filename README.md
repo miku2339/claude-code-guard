@@ -73,4 +73,4 @@ A system firewall would additionally require `NEFilterDataProvider`, authenticat
 
 ## License
 
-[MIT](LICENSE). The environment page's base styling derives from the MIT-licensed [Claude Chrome](https://github.com/miku233333/claude-chrome) resources. CodeGuard uses its own name and icon.
+[MIT](LICENSE). The environment page's base styling derives from the MIT-licensed [Claude Chrome](https://github.com/miku2339/claude-chrome) resources. CodeGuard uses its own name and icon.
